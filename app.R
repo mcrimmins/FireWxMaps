@@ -1,4 +1,6 @@
 # updated version of app_v3.R; added FOD daily summary plots and daily weather maps
+# github version control 
+# MAC 2/25/25
 
 library(shiny)
 library(terra)
@@ -7,6 +9,10 @@ library(maps)
 library(dplyr)
 library(tidyr)
 library(plotly)
+library(shinythemes)
+
+# waiter message
+message("Loading data...")
 
 # Load data
 load("./Data/FOD.RData")
@@ -17,34 +23,103 @@ us_states$region <- tools::toTitleCase(us_states$region)
 gh500 <- terra::rast("./Data/R2_hgt_500mb_1992_2020_CONUS.tif")
 gh700 <- terra::rast("./Data/R2_hgt_700mb_1992_2020_CONUS.tif")
 precip90<-terra::rast("./Data/CPC_Global_precip_90dyPercAvg_1992_2020_CONUS.tif")
-
+#precip30<-terra::rast("./Data/CPC_Global_precip_30dyPercAvg_1992_2020_CONUS.tif")
+precip14<-terra::rast("./Data/CPC_Global_precip_14dyPercAvg_1992_2020_CONUS.tif")
 
 # Adjust fire dates
 fc$DISCOVERY_DATE <- as.Date(fc$DISCOVERY_DATE, "%m/%d/%Y")
 fc$CONT_DATE <- as.Date(fc$CONT_DATE, "%m/%d/%Y")
 fc$OPERATION_DAYS <- as.numeric(fc$CONT_DATE - fc$DISCOVERY_DATE)+1
 
+# NEW: Determine min/max year from the dataset
+fc$DISCOVERY_YEAR <- as.numeric(format(fc$DISCOVERY_DATE, "%Y"))
+min_year <- min(fc$DISCOVERY_YEAR, na.rm = TRUE)  # e.g. 1992
+max_year <- max(fc$DISCOVERY_YEAR, na.rm = TRUE)  # e.g. 2020
+
 
 ui <- fluidPage(
+  theme = shinytheme("spacelab"),    # <--- pick a theme here
+  
+  # Add the logo at the top of the page
+  tags$div(
+    style = "display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;",
+    tags$h1("U.S. Wildfire & Weather Pattern Explorer"),
+    tags$img(src = "UAlogo.jpg", height = "60px")  # Adjust the height as needed
+  ),
+  
   tags$head(tags$style("#loading-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; text-align: center; }")),
-  div(id = "loading-content", "Loading data..."),
-  titlePanel("Fire Occurrence and Geopotential Height Maps"),
+  #div(id = "loading-content", "Loading data..."),
+  #titlePanel("U.S. Wildfire & Weather Pattern Explorer"),
   sidebarLayout(
     sidebarPanel(
       selectInput("states", "Select States:", choices = sort(unique(fc$STATE)), multiple = TRUE, selected = "AZ"),
       selectInput("height_level", "Select Geopotential Height Level:", choices = c("500mb" = "gh500", "700mb" = "gh700")),
+      radioButtons(
+        inputId = "precip_type",
+        label = "Select % of Avg Precipitation Period:",
+        choices = c("14-day" = "precip14",
+                    #"30-day" = "precip30",
+                    "90-day" = "precip90"),
+        selected = "precip90"
+      ),
       sliderInput("operation_days", "Filter by Operation Days:", min = min(fc$OPERATION_DAYS, na.rm = TRUE), max = max(fc$OPERATION_DAYS, na.rm = TRUE), value = c(min(fc$OPERATION_DAYS, na.rm = TRUE), max(fc$OPERATION_DAYS, na.rm = TRUE)), step = 1),
       sliderInput("month_range", "Select Month Range:", min = 1, max = 12, value = c(1, 12), step = 1, ticks = TRUE),
+      # Year Range slider
+      sliderInput(
+        inputId = "year_range",
+        label   = "Select Year Range:",
+        min     = min_year,
+        max     = max_year,
+        value   = c(min_year, max_year),
+        step    = 1,
+        sep     = ""  # No thousands separator
+      ),
+      
+      selectInput(
+        inputId = "fire_size_class",
+        label   = "Select Fire Size Class:",
+        choices = sort(unique(fc$FIRE_SIZE_CLASS)),  # ensure sorted order
+        multiple = TRUE, 
+        selected = sort(unique(fc$FIRE_SIZE_CLASS))  # Start by including all classes by default
+      ),
+      
+      sliderInput(
+        inputId = "firesize_pctile",
+        label   = "Filter by Fire Size Percentile Rank:",
+        min     = 0,
+        max     = 100,
+        value   = c(0, 100),  # starts at full range
+        step    = 1
+      ),
+      
       selectInput("cause_classification", "Select Cause Classification:", choices = c("All", sort(unique(fc$NWCG_CAUSE_CLASSIFICATION)))),
       selectInput("sort_metric", "Sort by:", choices = c("Fire Count" = "count", "Total Area Burned" = "area")),
       numericInput("top_days", "Number of Top Days to Display:", 12, min = 1, max = 30),
       sliderInput("expd", "Area of extent padding (in degrees):", min = 0.5, max = 10, value = 2, step = 0.5),
-      p("This tool uses the Spatial wildfire occurrence database for the United States, 1992-2020 (FOD, Short 2022), NOAA-NCEP/DOE Reanalysis II for daily 18Z geopotential height data, and CPC Global Unified Gauge-Based Analysis of Daily Precipitation.")
+      
+      # info on app
+      tags$hr(), 
+      p("This tool uses the Spatial wildfire occurrence database for the United States, 1992-2020 (FOD, Short 2022), NOAA-NCEP/DOE Reanalysis II for daily 18Z geopotential height data, and CPC Global Unified Gauge-Based Analysis of Daily Precipitation."),
+      
+      # Container div for logo and contact info
+      div(
+        style = "text-align: center;",  # center them (optional)
+        
+        # Logo image (assumes file is in www/my_logo.png)
+        tags$img(src = "BP_app_logos.png", style = "width: 100%; height: auto;"),
+        
+        # Contact info
+        tags$p("Contact: Mike Crimmins, crimmins@arizona.edu"),
+        tags$p("https://cales.arizona.edu/climate/")
+        
+      )
+      
+      
     ),
     mainPanel(
       tabsetPanel(
         tabPanel("Extreme Fire Days", 
-                 div(class = "left-align", plotOutput("fireMap", width="900px",height = "700px")),
+                 div(class = "left-align", plotOutput("fireMap", width="950px",height = "750px")),
                  DT::dataTableOutput("fireDaysTable")),
         tabPanel("Daily FOD Summary", plotlyOutput("fireSummaryPlot", width = "100%")),
         tabPanel("Daily Weather Maps", 
@@ -67,16 +142,50 @@ server <- function(input, output, session) {
     removeUI(selector = "#loading-content")
   })
   
+  # precip selector
+  getPrecipData <- reactive({
+    switch(input$precip_type,
+           "precip14" = precip14,
+           #"precip30" = precip30,
+           "precip90" = precip90)
+  })
+  
   # render maps
   output$fireMap <- renderPlot({
     req(input$states, input$height_level, input$sort_metric, input$top_days)
     
-    fireData <- subset(fc, STATE %in% input$states & OPERATION_DAYS >= input$operation_days[1] & OPERATION_DAYS <= input$operation_days[2])
+    #fireData <- subset(fc, STATE %in% input$states & OPERATION_DAYS >= input$operation_days[1] & OPERATION_DAYS <= input$operation_days[2])
+    fireData <- subset(fc,
+                       STATE %in% input$states &
+                         # NEW: filter by year range
+                         DISCOVERY_YEAR >= input$year_range[1] &
+                         DISCOVERY_YEAR <= input$year_range[2] &
+                         OPERATION_DAYS >= input$operation_days[1] &
+                         OPERATION_DAYS <= input$operation_days[2])
+    
     fireData <- fireData %>% filter(format(DISCOVERY_DATE, "%m") %in% sprintf("%02d", input$month_range[1]:input$month_range[2]))
     if (input$cause_classification != "All") {
       fireData <- fireData %>% filter(NWCG_CAUSE_CLASSIFICATION == input$cause_classification)
     }
     
+    # Filter by Fire Size Class (if you have that input)
+    if (!is.null(input$fire_size_class)) {
+      fireData <- fireData %>%
+        dplyr::filter(FIRE_SIZE_CLASS %in% input$fire_size_class)
+    }
+    
+    # validate based on filters
+    validate(
+      need(nrow(fireData) > 0, "No fire data available for the selected filters.")
+    )
+    
+    # calculate percent rank for filtering
+    fireData$FIRE_SIZE_RANK <- (rank(fireData$FIRE_SIZE, na.last = "keep", ties.method = "random") / nrow(fireData))*100
+    
+    # NEW: Filter by Fire Size Percentile
+    fireData <- fireData %>%
+      dplyr::filter(FIRE_SIZE_RANK >= input$firesize_pctile[1],
+                    FIRE_SIZE_RANK <= input$firesize_pctile[2])
     
     fireDays <- fireData %>%
       group_by(DISCOVERY_DATE) %>%
@@ -105,11 +214,27 @@ server <- function(input, output, session) {
       mutate(Date = as.Date(Date))
     
     # subset precipitation data
-    precipSub <- precip90[[which(time(precip90) %in% selectDays)]]
+    # precipSub <- precip90[[which(time(precip90) %in% selectDays)]]
+    # names(precipSub) <- time(precipSub)
+    # precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
+    #   pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Precipitation") %>%
+    #   mutate(Date = as.Date(Date))
+    
+    # Subset precipitation data based on selected dataset
+    precipData <- getPrecipData()
+    precipSub <- precipData[[which(time(precipData) %in% selectDays)]]
     names(precipSub) <- time(precipSub)
     precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Precipitation") %>%
+      pivot_longer(cols = -c(x, y), 
+                   names_to = "Date", 
+                   values_to = "Precipitation") %>%
       mutate(Date = as.Date(Date))
+    
+    # Label for color scale
+    precip_label <- switch(input$precip_type,
+                           "precip14" = "14-day Precip (% of Avg)",
+                           #"precip30" = "30-day Precip (% of Avg)",
+                           "precip90" = "90-day Precip (% of Avg)")
     
     # define precip colorscale
     color_palette <- c("tan4","tan", "white","chartreuse2", "chartreuse4")  # Brown, White, Green
@@ -138,7 +263,7 @@ server <- function(input, output, session) {
       scale_color_gradientn(colors = c("blue", "cyan", "yellow", "orange", "red")) +
       scale_fill_gradientn(
         colors = color_palette,
-        name = "90-day Precip (% of Average)",
+        name = precip_label,
         values = scales::rescale(breakpoints, to = c(0, 1)),  # Rescale to 0-1 range
         limits = c(0, 200),  # Ensure out-of-bounds values are capped
         oob = scales::squish,  # Keeps values outside limits at the boundary colors
@@ -157,6 +282,18 @@ server <- function(input, output, session) {
     req(input$states)
     
     fireData <- subset(fc, STATE %in% input$states)
+    
+    # Filter by Fire Size Class
+    fireData <- fireData %>%
+      filter(FIRE_SIZE_CLASS %in% input$fire_size_class)
+    
+    # calculate percent rank for filtering
+    fireData$FIRE_SIZE_RANK <- (rank(fireData$FIRE_SIZE, na.last = "keep", ties.method = "random") / nrow(fireData))*100
+    
+    # NEW: Filter by Fire Size Percentile
+    fireData <- fireData %>%
+      dplyr::filter(FIRE_SIZE_RANK >= input$firesize_pctile[1],
+                    FIRE_SIZE_RANK <= input$firesize_pctile[2])
     
     fireDays <- fireData %>%
       group_by(DISCOVERY_DATE) %>%
@@ -201,11 +338,37 @@ server <- function(input, output, session) {
   # render table
   output$fireDaysTable <- DT::renderDataTable({
     req(input$states, input$sort_metric, input$top_days)
-    fireData <- subset(fc, STATE %in% input$states & OPERATION_DAYS >= input$operation_days[1] & OPERATION_DAYS <= input$operation_days[2])
+    
+    #fireData <- subset(fc, STATE %in% input$states & OPERATION_DAYS >= input$operation_days[1] & OPERATION_DAYS <= input$operation_days[2])
+    fireData <- subset(fc,
+                       STATE %in% input$states &
+                         # NEW: filter by year range
+                         DISCOVERY_YEAR >= input$year_range[1] &
+                         DISCOVERY_YEAR <= input$year_range[2] &
+                         OPERATION_DAYS >= input$operation_days[1] &
+                         OPERATION_DAYS <= input$operation_days[2])
+    
     fireData <- fireData %>% filter(format(DISCOVERY_DATE, "%m") %in% sprintf("%02d", input$month_range[1]:input$month_range[2]))
     if (input$cause_classification != "All") {
       fireData <- fireData %>% filter(NWCG_CAUSE_CLASSIFICATION == input$cause_classification)
     }
+    
+    # Filter by Fire Size Class
+    fireData <- fireData %>%
+      filter(FIRE_SIZE_CLASS %in% input$fire_size_class)
+    
+    validate(
+      need(nrow(fireData) > 0, "No fire data available for the selected filters.")
+    )
+    
+    # calculate percent rank for filtering
+    fireData$FIRE_SIZE_RANK <- (rank(fireData$FIRE_SIZE, na.last = "keep", ties.method = "random") / nrow(fireData))*100
+    
+    # NEW: Filter by Fire Size Percentile
+    fireData <- fireData %>%
+      dplyr::filter(FIRE_SIZE_RANK >= input$firesize_pctile[1],
+                    FIRE_SIZE_RANK <= input$firesize_pctile[2])
+    
     fireDays <- fireData %>%
       group_by(DISCOVERY_DATE) %>%
       summarise(FireCount = n(), TotalArea = sum(FIRE_SIZE, na.rm = TRUE)) %>%
@@ -258,18 +421,50 @@ server <- function(input, output, session) {
       fireData <- fireData %>% filter(NWCG_CAUSE_CLASSIFICATION == input$cause_classification)
     }
     
+    # Filter by Fire Size Class
+    fireData <- fireData %>%
+      filter(FIRE_SIZE_CLASS %in% input$fire_size_class)
+    
     validate(
       need(nrow(fireData) > 0, "No fire data available for the selected filters.")
     )
     
+    # calculate percent rank for filtering
+    fireData$FIRE_SIZE_RANK <- (rank(fireData$FIRE_SIZE, na.last = "keep", ties.method = "random") / nrow(fireData))*100
+    
+    # NEW: Filter by Fire Size Percentile
+    fireData <- fireData %>%
+      dplyr::filter(FIRE_SIZE_RANK >= input$firesize_pctile[1],
+                    FIRE_SIZE_RANK <= input$firesize_pctile[2])
+    
     fireData$Date <- factor(fireData$DISCOVERY_DATE, levels = date_range)
     
     # subset precipitation data
-    precipSub <- precip90[[which(time(precip90) %in% date_range)]]
+    # precipSub <- precip90[[which(time(precip90) %in% date_range)]]
+    # names(precipSub) <- time(precipSub)
+    # precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
+    #   pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Precipitation") %>%
+    #   mutate(Date = as.Date(Date))
+    
+    # Subset precipitation data based on input$precip_type
+    precipData <- getPrecipData()
+    precipSub <- precipData[[which(time(precipData) %in% date_range)]]
+    validate(
+      need(!is.null(precipSub) && nlyr(precipSub) > 0, 
+           "No precipitation data available for these dates.")
+    )
     names(precipSub) <- time(precipSub)
     precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Precipitation") %>%
+      pivot_longer(cols = -c(x, y),
+                   names_to = "Date",
+                   values_to = "Precipitation") %>%
       mutate(Date = as.Date(Date))
+    
+    # Label for color scale
+    precip_label <- switch(input$precip_type,
+                           "precip14" = "14-day Precip (% of Avg)",
+                           #"precip30" = "30-day Precip (% of Avg)",
+                           "precip90" = "90-day Precip (% of Avg)")
     
     # define precip colorscale
     color_palette <- c("tan4","tan", "white","chartreuse2", "chartreuse4")  # Brown, White, Green
@@ -299,7 +494,7 @@ server <- function(input, output, session) {
       scale_color_gradientn(colors = c("blue", "cyan", "yellow", "orange", "red")) +
       scale_fill_gradientn(
         colors = color_palette,
-        name = "90-day Precip (% of Average)",
+        name = precip_label,
         values = scales::rescale(breakpoints, to = c(0, 1)),  # Rescale to 0-1 range
         limits = c(0, 200),  # Ensure out-of-bounds values are capped
         oob = scales::squish,  # Keeps values outside limits at the boundary colors
