@@ -416,7 +416,16 @@ server <- function(input, output, session) {
     
     # filter fire data
     fireData <- fc %>% filter(DISCOVERY_DATE %in% date_range)
-    fireData <- subset(fireData, STATE %in% input$states)
+
+    #fireData <- subset(fireData, STATE %in% input$states)
+    fireData <- subset(fireData,
+                       STATE %in% input$states &
+                         # NEW: filter by year range
+                         #DISCOVERY_YEAR >= input$year_range[1] &
+                         #DISCOVERY_YEAR <= input$year_range[2] &
+                         OPERATION_DAYS >= input$operation_days[1] &
+                         OPERATION_DAYS <= input$operation_days[2])
+    
     if (input$cause_classification != "All") {
       fireData <- fireData %>% filter(NWCG_CAUSE_CLASSIFICATION == input$cause_classification)
     }
