@@ -2,6 +2,8 @@
 # github version control 
 # MAC 2/25/25
 
+# adds current year fires and weather maps -- version 08/18/25
+
 library(shiny)
 library(terra)
 library(ggplot2)
@@ -11,12 +13,28 @@ library(tidyr)
 library(plotly)
 library(shinythemes)
 
+# source helper function
+source("./util/currYrFireHelperFunc.R")
+
 # waiter message
 message("Loading data...")
 
 # Load data
 load("./Data/FODthin.Rdata")
 #fc <- sf::st_drop_geometry(fc)
+
+# update with current year fires
+# Step 1: Download data
+wfigs <- get_wfigs_data()
+# # Step 2: Add state info
+wfigs<- add_state_column(wfigs)
+# # Step 3: Format to FOD structure
+wfigs<- format_wfigs_to_fod(wfigs)
+# Step 4: Merge with your existing FOD dataset (fc)
+fc <- merge_with_fod(fc, wfigs)
+
+
+# load state data
 us_states <- map_data("state")
 us_states$region <- tools::toTitleCase(us_states$region)
 
@@ -25,6 +43,17 @@ gh700 <- terra::rast("./Data/R2_hgt_700mb_1992_2020_CONUS.tif")
 precip90<-terra::rast("./Data/CPC_Global_precip_90dyPercAvg_1992_2020_CONUS_INT.tif")
 #precip30<-terra::rast("./Data/CPC_Global_precip_30dyPercAvg_1992_2020_CONUS.tif")
 precip14<-terra::rast("./Data/CPC_Global_precip_14dyPercAvg_1992_2020_CONUS_INT.tif")
+
+# append current year Reanalysis 2 data
+gh500 <- append_current_year_reanalysis(gh500, 
+                                                level_index = 6, # 6 = 500 mb, 4 = 700 mb
+                                                year = 2025)
+gh700 <- append_current_year_reanalysis(gh700, 
+                                        level_index = 4, # 6 = 500 mb, 4 = 700 mb
+                                        year = 2025)
+
+
+
 
 # Adjust fire dates
 fc$DISCOVERY_DATE <- as.Date(fc$DISCOVERY_DATE, "%m/%d/%Y")
@@ -455,25 +484,61 @@ server <- function(input, output, session) {
     #   pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Precipitation") %>%
     #   mutate(Date = as.Date(Date))
     
-    # Subset precipitation data based on input$precip_type
-    precipData <- getPrecipData()
-    precipSub <- precipData[[which(time(precipData) %in% date_range)]]
-    validate(
-      need(!is.null(precipSub) && nlyr(precipSub) > 0, 
-           "No precipitation data available for these dates.")
-    )
-    names(precipSub) <- time(precipSub)
-    precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y),
-                   names_to = "Date",
-                   values_to = "Precipitation") %>%
-      mutate(Date = as.Date(Date))
+    # # Subset precipitation data based on input$precip_type
+    # precipData <- getPrecipData()
+    # precipSub <- precipData[[which(time(precipData) %in% date_range)]]
+    # validate(
+    #   need(!is.null(precipSub) && nlyr(precipSub) > 0, 
+    #        "No precipitation data available for these dates.")
+    # )
+    # names(precipSub) <- time(precipSub)
+    # precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
+    #   pivot_longer(cols = -c(x, y),
+    #                names_to = "Date",
+    #                values_to = "Precipitation") %>%
+    #   mutate(Date = as.Date(Date))
+    # 
+    # # Label for color scale
+    # precip_label <- switch(input$precip_type,
+    #                        "precip14" = "14-day Precip (% of Avg)",
+    #                        #"precip30" = "30-day Precip (% of Avg)",
+    #                        "precip90" = "90-day Precip (% of Avg)")
     
-    # Label for color scale
+    #####
+    # --- Subset precipitation data safely (NO hard validate) ---
+    precipData <- getPrecipData()
+    
+    # Dates available in the raster
+    precip_dates <- as.Date(time(precipData))
+    
+    # Intersect with requested range
+    idx <- which(precip_dates %in% date_range)
+    
+    if (length(idx) > 0) {
+      precipSub <- precipData[[idx]]
+      names(precipSub) <- as.character(precip_dates[idx])
+      precip_df <- as.data.frame(precipSub, xy = TRUE) |>
+        tidyr::pivot_longer(cols = -c(x, y),
+                            names_to = "Date",
+                            values_to = "Precipitation") |>
+        dplyr::mutate(Date = as.Date(Date))
+    } else {
+      # Empty df -> no tiles drawn, but map still renders
+      precip_df <- data.frame(
+        x = numeric(0), y = numeric(0),
+        Precipitation = numeric(0),
+        Date = as.Date(character())
+      )
+      # Optional: let the user know
+      shiny::showNotification("No precipitation layers for the selected dates; plotting without precip.", type = "warning", duration = 5)
+    }
+    
+    # Label for color scale (include all 3 choices)
     precip_label <- switch(input$precip_type,
                            "precip14" = "14-day Precip (% of Avg)",
                            #"precip30" = "30-day Precip (% of Avg)",
                            "precip90" = "90-day Precip (% of Avg)")
+    #####
     
     # define precip colorscale
     color_palette <- c("tan4","tan", "white","chartreuse2", "chartreuse4")  # Brown, White, Green
@@ -492,28 +557,64 @@ server <- function(input, output, session) {
       summarise(FireCount = n(), TotalArea = sum(FIRE_SIZE, na.rm = TRUE))
     fireStats$label <- paste0(fireStats$TotalArea, " / ", fireStats$FireCount)
     
+    # ggplot() +
+    #   geom_tile(data = precip_df, aes(x = x, y = y, fill = Precipitation), alpha=0.7) +
+    #   geom_point(data = fireData, aes(x = LONGITUDE, y = LATITUDE, size = FIRE_SIZE_CLASS), shape = 21, fill = "lightgrey", color = "black", stroke = 1, alpha = 0.8) +
+    #   geom_contour(data = gh_df, aes(x = x, y = y, z = Geopotential_Height, color = after_stat(level)), binwidth = 10) +
+    #   geom_path(data = us_states, aes(x = long, y = lat, group = group), color = "black", linewidth = 0.5) +
+    #   #geom_text(data = fireStats, aes(x = xmin + 0.2, y = ymax - 0.2, label = label), inherit.aes = FALSE, hjust = 0, vjust = 1, size = 3, color = "black") +
+    #   geom_label(data = fireStats, aes(x = xmin + 0.2, y = ymax - 0.2, label = label), inherit.aes = FALSE, hjust = 0, vjust = 1, size = 3, color = "black") +
+    #   facet_wrap(~Date) +
+    #   scale_color_gradientn(colors = c("blue", "cyan", "yellow", "orange", "red")) +
+    #   scale_fill_gradientn(
+    #     colors = color_palette,
+    #     name = precip_label,
+    #     values = scales::rescale(breakpoints, to = c(0, 1)),  # Rescale to 0-1 range
+    #     limits = c(0, 200),  # Ensure out-of-bounds values are capped
+    #     oob = scales::squish,  # Keeps values outside limits at the boundary colors
+    #     breaks = c(0, 50, 100, 150,200),  # Define breaks
+    #     labels = c("0", "50","100","150","200+")  # Label 600 as "600+"
+    #   )+
+    #   scale_size_manual(values = c("A" = 1, "B" = 2, "C" = 3, "D" = 4, "E" = 5, "F" = 6, "G" = 7)) +
+    #   coord_fixed(ratio = 1, xlim = c(xmin, xmax), ylim = c(ymin, ymax)) +
+    #   labs(title = paste(input$height_level, "Geopotential Height & Fire Locations"), x = "Longitude", y = "Latitude", color = "Geopotential Height (m)", size = "Fire Size Class") +
+    #   theme_minimal() + theme(legend.position = "bottom")
+    
+    #####
     ggplot() +
-      geom_tile(data = precip_df, aes(x = x, y = y, fill = Precipitation), alpha=0.7) +
-      geom_point(data = fireData, aes(x = LONGITUDE, y = LATITUDE, size = FIRE_SIZE_CLASS), shape = 21, fill = "lightgrey", color = "black", stroke = 1, alpha = 0.8) +
-      geom_contour(data = gh_df, aes(x = x, y = y, z = Geopotential_Height, color = after_stat(level)), binwidth = 10) +
+      { if (nrow(precip_df) > 0) 
+        geom_tile(data = precip_df, aes(x = x, y = y, fill = Precipitation), alpha = 0.7)
+        else NULL } +
+      geom_point(data = fireData, aes(x = LONGITUDE, y = LATITUDE, size = FIRE_SIZE_CLASS),
+                 shape = 21, fill = "lightgrey", color = "black", stroke = 1, alpha = 0.8) +
+      geom_contour(data = gh_df, aes(x = x, y = y, z = Geopotential_Height, color = after_stat(level)), 
+                   binwidth = 10) +
       geom_path(data = us_states, aes(x = long, y = lat, group = group), color = "black", linewidth = 0.5) +
-      #geom_text(data = fireStats, aes(x = xmin + 0.2, y = ymax - 0.2, label = label), inherit.aes = FALSE, hjust = 0, vjust = 1, size = 3, color = "black") +
-      geom_label(data = fireStats, aes(x = xmin + 0.2, y = ymax - 0.2, label = label), inherit.aes = FALSE, hjust = 0, vjust = 1, size = 3, color = "black") +
+      geom_label(data = fireStats, aes(x = xmin + 0.2, y = ymax - 0.2, label = label),
+                 inherit.aes = FALSE, hjust = 0, vjust = 1, size = 3, color = "black") +
       facet_wrap(~Date) +
       scale_color_gradientn(colors = c("blue", "cyan", "yellow", "orange", "red")) +
-      scale_fill_gradientn(
-        colors = color_palette,
-        name = precip_label,
-        values = scales::rescale(breakpoints, to = c(0, 1)),  # Rescale to 0-1 range
-        limits = c(0, 200),  # Ensure out-of-bounds values are capped
-        oob = scales::squish,  # Keeps values outside limits at the boundary colors
-        breaks = c(0, 50, 100, 150,200),  # Define breaks
-        labels = c("0", "50","100","150","200+")  # Label 600 as "600+"
-      )+
-      scale_size_manual(values = c("A" = 1, "B" = 2, "C" = 3, "D" = 4, "E" = 5, "F" = 6, "G" = 7)) +
+      # If you want to hide the precip legend when there’s no precip layer:
+      { if (nrow(precip_df) > 0)
+        scale_fill_gradientn(
+          colors = c("tan4","tan","white","chartreuse2","chartreuse4"),
+          name   = precip_label,
+          values = scales::rescale(c(0,50,100,150,200), to = c(0,1)),
+          limits = c(0,200), oob = scales::squish,
+          breaks = c(0,50,100,150,200),
+          labels = c("0","50","100","150","200+")
+        ) else
+          guides(fill = "none") } +
+      scale_size_manual(values = c("A"=1,"B"=2,"C"=3,"D"=4,"E"=5,"F"=6,"G"=7)) +
       coord_fixed(ratio = 1, xlim = c(xmin, xmax), ylim = c(ymin, ymax)) +
-      labs(title = paste(input$height_level, "Geopotential Height & Fire Locations"), x = "Longitude", y = "Latitude", color = "Geopotential Height (m)", size = "Fire Size Class") +
+      labs(title = paste(input$height_level, "Geopotential Height & Fire Locations"),
+           x = "Longitude", y = "Latitude", color = "Geopotential Height (m)", size = "Fire Size Class") +
       theme_minimal() + theme(legend.position = "bottom")
+  
+    #####
+    
+    
+    
     
   })
   
