@@ -15,7 +15,7 @@ library(shinythemes)
 message("Loading data...")
 
 # Load data
-load("./runData/FODthin.Rdata")
+load("./Data/FODthin.Rdata")
 #fc <- sf::st_drop_geometry(fc)
 us_states <- map_data("state")
 us_states$region <- tools::toTitleCase(us_states$region)
@@ -23,52 +23,12 @@ us_states$region <- tools::toTitleCase(us_states$region)
 # Load geopotential height and precipitation data
 # look for data and helper scripts in /RProjects/FireWeatherScratch
 # use getNARR_8xday.R to update/generate R2 data
-gh500 <- terra::rast("./runData/R2_hgt_500mb_1992_2024_CONUS.tif")
-gh700 <- terra::rast("./runData/R2_hgt_700mb_1992_2024_CONUS.tif")
-gh1000 <- terra::rast("./runData/R2_hgt_1000mb_1992_2024_CONUS.tif")
-precip90<-terra::rast("./runData/CPC_Global_precip_90dyPercAvg_1992_2024_CONUS.tif")
+gh500 <- terra::rast("./Data/R2_hgt_500mb_1992_2024_CONUS.tif")
+gh700 <- terra::rast("./Data/R2_hgt_700mb_1992_2024_CONUS.tif")
+gh1000 <- terra::rast("./Data/R2_hgt_1000mb_1992_2024_CONUS.tif")
+precip90<-terra::rast("./Data/CPC_Global_precip_90dyPercAvg_1992_2024_CONUS.tif")
 #precip30<-terra::rast("./Data/CPC_Global_precip_30dyPercAvg_1992_2020_CONUS.tif")
-precip14<-terra::rast("./runData/CPC_Global_precip_14dyPercAvg_1992_2024_CONUS.tif")
-
-# ==============================================================================
-# Normalize raster time dimensions to daily dates
-# ==============================================================================
-normalize_daily_time <- function(x, label) {
-  
-  if (!terra::has.time(x)) {
-    stop(
-      label,
-      " does not contain time metadata.",
-      call. = FALSE
-    )
-  }
-  
-  tt <- terra::time(x)
-  
-  if (inherits(tt, "Date")) {
-    dates <- tt
-  } else {
-    dates <- as.Date(tt, tz = "UTC")
-  }
-  
-  if (length(dates) != terra::nlyr(x) || anyNA(dates)) {
-    stop(
-      "Invalid time metadata in ",
-      label,
-      ".",
-      call. = FALSE
-    )
-  }
-  
-  terra::time(x) <- dates
-  
-  x
-}
-
-gh500 <- normalize_daily_time(gh500, "gh500")
-gh700 <- normalize_daily_time(gh700, "gh700")
-gh1000 <- normalize_daily_time(gh1000, "gh1000")
-
+precip14<-terra::rast("./Data/CPC_Global_precip_14dyPercAvg_1992_2024_CONUS.tif")
 
 # Adjust fire dates
 fc$DISCOVERY_DATE <- as.Date(fc$DISCOVERY_DATE, "%m/%d/%Y")
