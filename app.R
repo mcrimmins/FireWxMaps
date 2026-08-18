@@ -68,12 +68,24 @@ normalize_daily_time <- function(x, label) {
 gh500 <- normalize_daily_time(gh500, "gh500")
 gh700 <- normalize_daily_time(gh700, "gh700")
 gh1000 <- normalize_daily_time(gh1000, "gh1000")
+precip14 <- normalize_daily_time(precip14, "precip14")
+precip90 <- normalize_daily_time(precip90, "precip90")
 
 
 # Adjust fire dates
-fc$DISCOVERY_DATE <- as.Date(fc$DISCOVERY_DATE, "%m/%d/%Y")
-fc$CONT_DATE <- as.Date(fc$CONT_DATE, "%m/%d/%Y")
-fc$OPERATION_DAYS <- as.numeric(fc$CONT_DATE - fc$DISCOVERY_DATE)+1
+if (!inherits(fc$DISCOVERY_DATE, "Date")) {
+  fc$DISCOVERY_DATE <- as.Date(fc$DISCOVERY_DATE, format = "%m/%d/%Y")
+}
+
+if (!inherits(fc$CONT_DATE, "Date")) {
+  fc$CONT_DATE <- as.Date(fc$CONT_DATE, format = "%m/%d/%Y")
+}
+
+if (all(is.na(fc$DISCOVERY_DATE))) {
+  stop("DISCOVERY_DATE could not be converted to valid dates.", call. = FALSE)
+}
+
+fc$OPERATION_DAYS <- as.numeric(fc$CONT_DATE - fc$DISCOVERY_DATE) + 1
 
 # NEW: Determine min/max year from the dataset
 fc$DISCOVERY_YEAR <- as.numeric(format(fc$DISCOVERY_DATE, "%Y"))
@@ -143,7 +155,7 @@ ui <- fluidPage(
       
       # info on app
       tags$hr(), 
-      p("This tool uses the Spatial wildfire occurrence database for the United States, 1992-2020 (FOD, Short 2022), NOAA-NCEP/DOE Reanalysis II for daily 18Z geopotential height data, and CPC Global Unified Gauge-Based Analysis of Daily Precipitation."),
+      p("This tool uses the Spatial wildfire occurrence database for the United States, 1992-2024 (FOD, Short 2022), NOAA-NCEP/DOE Reanalysis II for daily 18Z geopotential height data, and CPC Global Unified Gauge-Based Analysis of Daily Precipitation."),
       
       # Container div for logo and contact info
       div(
@@ -188,11 +200,42 @@ server <- function(input, output, session) {
   
   # precip selector
   getPrecipData <- reactive({
-    switch(input$precip_type,
-           "precip14" = precip14,
-           #"precip30" = precip30,
-           "precip90" = precip90)
+    switch(
+      input$precip_type,
+      "precip14" = precip14,
+      #"precip30" = precip30,
+      "precip90" = precip90
+    )
   })
+  
+  # geopotential height selector
+  getHeightData <- reactive({
+    switch(
+      input$height_level,
+      "gh500" = gh500,
+      "gh700" = gh700,
+      "gh1000" = gh1000
+    )
+  })
+  
+  # safely subset a time-enabled raster by requested dates
+  subsetRasterDates <- function(x, dates, label = "Raster") {
+    raster_dates <- as.Date(terra::time(x))
+    idx <- match(as.Date(dates), raster_dates)
+    valid <- !is.na(idx)
+    
+    validate(
+      need(
+        any(valid),
+        paste0("No ", label, " data are available for the selected dates.")
+      )
+    )
+    
+    list(
+      raster = x[[idx[valid]]],
+      dates = as.Date(dates)[valid]
+    )
+  }
   
   # render maps
   output$fireMap <- renderPlot({
@@ -245,25 +288,27 @@ server <- function(input, output, session) {
       fireDays[order(fireDays$TotalArea, decreasing = TRUE),]
     }
     
-    selectDays <- unique(na.omit(fireDays$Date))[1:input$top_days]
+    selectDays <- head(unique(na.omit(fireDays$Date)), input$top_days)
     fireData <- fireData %>% filter(DISCOVERY_DATE %in% selectDays)
     fireData$Date <- factor(fireData$DISCOVERY_DATE, levels = selectDays)
     
     # subset geopotential height data
-    #ghData <- if (input$height_level == "gh500") gh500 else gh700
-    ##### adding 1000mb option
-    ghData <- if (input$height_level == "gh500") {
-      gh500
-    } else if (input$height_level == "gh700") {
-      gh700
-    } else if (input$height_level == "gh1000") {
-      gh1000
-    }
-    ######
-    ghSub <- ghData[[which(time(ghData) %in% selectDays)]]
-    names(ghSub) <- time(ghSub)
+    ghData <- getHeightData()
+    gh_match <- subsetRasterDates(
+      ghData,
+      selectDays,
+      label = "geopotential height"
+    )
+    
+    ghSub <- gh_match$raster
+    names(ghSub) <- as.character(gh_match$dates)
+    
     gh_df <- as.data.frame(ghSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Geopotential_Height") %>%
+      pivot_longer(
+        cols = -c(x, y),
+        names_to = "Date",
+        values_to = "Geopotential_Height"
+      ) %>%
       mutate(Date = as.Date(Date))
     
     # subset precipitation data
@@ -275,12 +320,21 @@ server <- function(input, output, session) {
     
     # Subset precipitation data based on selected dataset
     precipData <- getPrecipData()
-    precipSub <- precipData[[which(time(precipData) %in% selectDays)]]
-    names(precipSub) <- time(precipSub)
+    precip_match <- subsetRasterDates(
+      precipData,
+      selectDays,
+      label = "precipitation"
+    )
+    
+    precipSub <- precip_match$raster
+    names(precipSub) <- as.character(precip_match$dates)
+    
     precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y), 
-                   names_to = "Date", 
-                   values_to = "Precipitation") %>%
+      pivot_longer(
+        cols = -c(x, y),
+        names_to = "Date",
+        values_to = "Precipitation"
+      ) %>%
       mutate(Date = as.Date(Date))
     
     # Label for color scale
@@ -433,7 +487,7 @@ server <- function(input, output, session) {
     } else {
       fireDays[order(fireDays$TotalArea, decreasing = TRUE),]
     }
-    fireDays[1:input$top_days, ]
+    head(fireDays, input$top_days)
   })
   
   
@@ -459,17 +513,28 @@ server <- function(input, output, session) {
     #   mutate(Date = as.Date(Date))
     
     # subset geopotential height data
-    ghData <- if (input$height_level == "gh500") gh500 else gh700
-    ghSub <- ghData[[which(time(ghData) %in% date_range)]]
-    names(ghSub) <- time(ghSub)
+    ghData <- getHeightData()
+    gh_match <- subsetRasterDates(
+      ghData,
+      date_range,
+      label = "geopotential height"
+    )
+    
+    ghSub <- gh_match$raster
+    names(ghSub) <- as.character(gh_match$dates)
+    
     gh_df <- as.data.frame(ghSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y), names_to = "Date", values_to = "Geopotential_Height") %>%
+      pivot_longer(
+        cols = -c(x, y),
+        names_to = "Date",
+        values_to = "Geopotential_Height"
+      ) %>%
       mutate(Date = as.Date(Date))
     
     
     # filter fire data
     fireData <- fc %>% filter(DISCOVERY_DATE %in% date_range)
-
+    
     #fireData <- subset(fireData, STATE %in% input$states)
     fireData <- subset(fireData,
                        STATE %in% input$states &
@@ -510,16 +575,21 @@ server <- function(input, output, session) {
     
     # Subset precipitation data based on input$precip_type
     precipData <- getPrecipData()
-    precipSub <- precipData[[which(time(precipData) %in% date_range)]]
-    validate(
-      need(!is.null(precipSub) && nlyr(precipSub) > 0, 
-           "No precipitation data available for these dates.")
+    precip_match <- subsetRasterDates(
+      precipData,
+      date_range,
+      label = "precipitation"
     )
-    names(precipSub) <- time(precipSub)
+    
+    precipSub <- precip_match$raster
+    names(precipSub) <- as.character(precip_match$dates)
+    
     precip_df <- as.data.frame(precipSub, xy = TRUE) %>%
-      pivot_longer(cols = -c(x, y),
-                   names_to = "Date",
-                   values_to = "Precipitation") %>%
+      pivot_longer(
+        cols = -c(x, y),
+        names_to = "Date",
+        values_to = "Precipitation"
+      ) %>%
       mutate(Date = as.Date(Date))
     
     # Label for color scale
